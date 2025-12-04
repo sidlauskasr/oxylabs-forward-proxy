@@ -101,12 +101,36 @@ squid_extra_headers:
 
 Edit `roles/virtualbox_debian/defaults/main.yml`:
 ```yaml
+# VM Hardware
 vm_name: squid-proxy
 vm_memory: 2048  # MB
 vm_cpus: 2
-vm_network_type: bridged
-vm_network_adapter: eth0  # Your host adapter
+vm_disk_size: 20480  # MB
+vm_vram: 128
+
+# Network
+vm_network_type: bridged  # or nat, hostonly
+vm_network_adapter: "Intel(R) Wi-Fi 6E AX211 160MHz"  # Your adapter name
+
+# Storage paths (WSL2 example)
+download_dir: "/mnt/c/temp"           # ISO download location
+vbox_vms_dir: "/mnt/d/VM"             # VMs storage directory
+vm_disk_path: "{{ vbox_vms_dir }}/{{ vm_name }}/{{ vm_name }}.vdi"
+iso_download_timeout: 600             # Seconds to wait for ISO download
+
+# OS Configuration
+vm_username: test-oxylabs
+vm_password: changeme
+vm_hostname: "{{ vm_name }}"
+vm_timezone: Europe/Vilnius
+vm_locale: en_US
 ```
+
+**Important for WSL2 users:**
+- `download_dir` and `vbox_vms_dir` must be Windows paths mounted in WSL
+- Use `/mnt/c/` for C: drive, `/mnt/d/` for D: drive
+- Ensure directories exist and have write permissions
+- VirtualBox requires Windows-formatted paths
 
 ## Requirements
 
@@ -114,6 +138,7 @@ vm_network_adapter: eth0  # Your host adapter
 - **Host OS**: Windows 11 with WSL2 or Linux
 - **VirtualBox**: 6.0+
 - **Ansible**: 2.9+
+- **Disk Space**: ~10GB for VM + ISO
 - **Network**: Bridged adapter configured
 
 ### Installation (WSL2)
@@ -126,9 +151,26 @@ sudo apt install -y ansible sshpass
 echo 'alias VBoxManage="/mnt/c/Program\ Files/Oracle/VirtualBox/VBoxManage.exe"' >> ~/.bashrc
 source ~/.bashrc
 
+# Create storage directories
+mkdir -p /mnt/c/temp /mnt/d/VM
+
 # Verify
 VBoxManage --version
 ansible --version
+```
+
+### Installation (Native Linux)
+```bash
+# Install requirements
+sudo apt update
+sudo apt install -y ansible sshpass virtualbox
+
+# Create storage directories
+mkdir -p ~/VirtualBox\ VMs ~/Downloads
+
+# Update paths in roles/virtualbox_debian/defaults/main.yml:
+# download_dir: "~/Downloads"
+# vbox_vms_dir: "~/VirtualBox VMs"
 ```
 
 ## Project Structure
@@ -179,13 +221,43 @@ Client → Squid Proxy (SSL Bumping) → Target Server
          - Logs requests
 ```
 
+### VM Provisioning Flow
+
+1. Downloads Debian netinst ISO (~400MB)
+2. Creates VirtualBox VM with specified resources
+3. Configures unattended installation
+4. Starts VM and waits for installation (~15 min)
+5. Retrieves VM IP from VirtualBox guest properties
+6. Adds VM to Ansible inventory
+7. Proceeds with Squid deployment
+
 ## Troubleshooting
+
+### VM Creation Issues
+```bash
+# Check VirtualBox VMs
+VBoxManage list vms
+VBoxManage showvminfo VM_NAME
+
+# Check storage paths exist
+ls -la /mnt/c/temp
+ls -la /mnt/d/VM
+
+# Verify VBoxManage works from WSL
+VBoxManage --version
+
+# Check network adapters
+VBoxManage list bridgedifs
+```
 
 ### Squid not listening on port 8888
 ```bash
 ssh user@proxy-vm
 sudo journalctl -u squid -n 50
 sudo netstat -tlnp | grep squid
+
+# Check if debian.conf is interfering
+sudo cat /etc/squid/squid.conf | grep include
 ```
 
 ### SSL certificate errors
@@ -193,16 +265,17 @@ sudo netstat -tlnp | grep squid
 # Reinstall CA certificate
 sudo cp files/squid-ca.crt /usr/local/share/ca-certificates/squid-proxy.crt
 sudo update-ca-certificates
+
+# Verify installation
+ls -la /usr/local/share/ca-certificates/
 ```
 
-### VM provisioning fails
-```bash
-# Check VirtualBox
-VBoxManage list vms
-VBoxManage showvminfo VM_NAME
+### ISO download timeout
 
-# Check VM logs
-VBoxManage showvminfo VM_NAME --log 0
+If ISO download is slow, increase timeout:
+```yaml
+# In roles/virtualbox_debian/defaults/main.yml
+iso_download_timeout: 1200  # 20 minutes
 ```
 
 ## Security Notes
@@ -214,6 +287,18 @@ VBoxManage showvminfo VM_NAME --log 0
 3. **Change default passwords** - Never use defaults in production
 4. **Restrict network access** - Configure `squid_allowed_networks`
 5. **Monitor logs** - Check `/var/log/squid/access.log` regularly
+6. **Private repository** - Keep credentials out of public repos
+
+## Performance Tuning
+
+For high-traffic scenarios, adjust in `roles/squid_proxy/defaults/main.yml`:
+```yaml
+# SSL bump workers
+squid_ssl_bump_children: 10  # Increase for more concurrent SSL connections
+
+# Cache size
+squid_ssl_bump_cache_size: 8MB  # Increase for better performance
+```
 
 ## License
 
@@ -221,4 +306,4 @@ MIT
 
 ## Author
 
-Created for infrastructure automation and proxy deployment learning.
+Created for Oxylabs infrastructure automation homework.

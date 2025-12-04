@@ -5,6 +5,7 @@ Complete Ansible automation for deploying Squid forward proxy with SSL bumping (
 ## Features
 
 ✅ **VirtualBox VM Provisioning**
+- Auto-downloads latest Debian netinst ISO
 - Automated Debian installation
 - Unattended setup (~15 minutes)
 - Bridged network with automatic IP detection

@@ -1,0 +1,7 @@
+---
+galaxy_info:
+  author: Infrastructure Team
+  description: Automated VirtualBox VM provisioning with Debian
+  license: MIT
+  min_ansible_version: "2.9"
+dependencies: []

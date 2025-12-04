@@ -1,0 +1,36 @@
+---
+# VBoxManage settings
+vboxmanage_cmd: "/mnt/c/Program Files/Oracle/VirtualBox/VBoxManage.exe"
+vboxmanage_chdir: "/root"
+
+# VM Configuration
+vm_name: "debian-vm"
+vm_memory: 2048
+vm_cpus: 2
+vm_disk_size: 20480
+vm_vram: 128
+vm_network_type: "bridged"
+vm_network_adapter: "Intel(R) Wi-Fi 6E AX211 160MHz"
+vm_boot_mode: "headless"
+
+# Debian ISO
+debian_iso_base_url: "https://cdimage.debian.org/debian-cd/current/amd64/iso-cd/"
+
+# User configuration
+vm_username: "test-oxylabs"
+vm_password: "changeme"
+vm_hostname: "{{ vm_name }}"
+vm_domain: "local"
+vm_timezone: "Europe/Vilnius"
+vm_locale: "en_US"
+vm_keyboard: "us"
+
+# Storage paths
+download_dir: "/mnt/c/temp"
+vbox_vms_dir: "/mnt/d/VM"
+vm_disk_path: "{{ vbox_vms_dir }}/{{ vm_name }}/{{ vm_name }}.vdi"
+iso_download_timeout: 600
+
+# Installation options
+install_guest_additions: true
+package_selection: "minimal"

@@ -1,0 +1,35 @@
+---
+# Squid proxy port
+squid_proxy_port: 8888
+
+# Proxy authentication
+squid_proxy_user: proxyuser
+squid_proxy_pass: SecurePass123!
+
+# Allowed networks
+squid_allowed_networks:
+  - 192.168.0.0/16
+  - 10.0.0.0/8
+
+# SSL settings
+squid_ssl_dir: /etc/squid/ssl
+squid_ssl_db_dir: /var/lib/squid/ssl_db
+squid_ca_common_name: "Squid Proxy CA"
+squid_cert_validity_days: 3650
+squid_ssl_bump_children: 5
+squid_ssl_bump_cache_size: 4MB
+
+# Custom headers
+squid_custom_headers:
+  - name: X-Forwarded-User
+    value: "%LOGIN"
+  - name: X-Client-Ip
+    value: "%>a"
+  - name: X-Oxylabs-Homework
+    value: "Rytis"
+
+# Extra custom headers
+squid_extra_headers: []
+
+# Service settings
+squid_fetch_ca_cert: yes

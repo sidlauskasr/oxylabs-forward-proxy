@@ -1,0 +1,46 @@
+# Squid Forward Proxy Configuration with SSL Bumping
+# Managed by Ansible
+
+# SSL-bumping HTTPS proxy
+http_port {{ squid_proxy_port }} ssl-bump generate-host-certificates=on dynamic_cert_mem_cache_size={{ squid_ssl_bump_cache_size }} cert={{ squid_ssl_dir }}/bump.pem
+
+# SSL bump settings
+sslcrtd_program /usr/lib/squid/security_file_certgen -s {{ squid_ssl_db_dir }} -M {{ squid_ssl_bump_cache_size }}
+sslcrtd_children {{ squid_ssl_bump_children }}
+
+# Bump all SSL connections
+acl step1 at_step SslBump1
+ssl_bump peek step1
+ssl_bump bump all
+
+# Authentication
+auth_param basic program /usr/lib/squid/basic_ncsa_auth /etc/squid/.htpasswd
+auth_param basic realm Proxy Authentication
+acl authenticated proxy_auth REQUIRED
+
+# Access control
+{% for network in squid_allowed_networks %}
+acl localnet src {{ network }}
+{% endfor %}
+acl SSL_ports port 443
+acl Safe_ports port 80 443
+acl CONNECT method CONNECT
+
+http_access deny !Safe_ports
+http_access deny CONNECT !SSL_ports
+http_access allow localnet authenticated
+http_access deny all
+
+# Custom headers
+{% for header in squid_custom_headers %}
+request_header_add {{ header.name }} "{{ header.value }}" all
+{% endfor %}
+{% for header in squid_extra_headers %}
+request_header_add {{ header.name }} "{{ header.value }}" all
+{% endfor %}
+
+# Forwarding settings
+forwarded_for on
+
+# Cache settings
+cache deny all

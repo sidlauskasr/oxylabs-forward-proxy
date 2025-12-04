@@ -1,0 +1,166 @@
+---
+- name: Ensure download directory exists
+  ansible.builtin.file:
+    path: "{{ download_dir }}"
+    state: directory
+    mode: '0755'
+
+- name: Get Debian ISO list
+  ansible.builtin.uri:
+    url: "{{ debian_iso_base_url }}"
+    return_content: yes
+  register: debian_mirror_page
+
+- name: Extract netinst ISO filename
+  ansible.builtin.set_fact:
+    debian_iso_filename: "{{ debian_mirror_page.content | regex_search('(debian-[0-9.]+\\-amd64-netinst\\.iso)', '\\1') | first }}"
+
+- name: Set ISO paths
+  ansible.builtin.set_fact:
+    debian_iso_url: "{{ debian_iso_base_url }}{{ debian_iso_filename }}"
+    debian_iso_path: "{{ download_dir }}/{{ debian_iso_filename }}"
+
+- name: Check if ISO exists
+  ansible.builtin.stat:
+    path: "{{ debian_iso_path }}"
+  register: iso_file
+
+- name: Download Debian ISO
+  ansible.builtin.get_url:
+    url: "{{ debian_iso_url }}"
+    dest: "{{ debian_iso_path }}"
+    mode: '0644'
+    timeout: "{{ iso_download_timeout }}"
+  when: not iso_file.stat.exists
+
+- name: Create VM directory
+  ansible.builtin.file:
+    path: "{{ vbox_vms_dir }}/{{ vm_name }}"
+    state: directory
+    mode: '0755'
+
+- name: Convert paths to Windows format
+  ansible.builtin.set_fact:
+    vbox_vms_dir_win: "{{ vbox_vms_dir | regex_replace('^/mnt/([a-z])/', '\\1:/') }}"
+    vm_disk_path_win: "{{ vm_disk_path | regex_replace('^/mnt/([a-z])/', '\\1:/') }}"
+    debian_iso_path_win: "{{ debian_iso_path | regex_replace('^/mnt/([a-z])/', '\\1:/') }}"
+
+- name: Check existing VMs
+  ansible.builtin.shell:
+    cmd: '"{{ vboxmanage_cmd }}" list vms'
+    chdir: "{{ vboxmanage_chdir }}"
+  register: existing_vms
+  changed_when: false
+
+- name: Delete existing VM
+  ansible.builtin.shell:
+    cmd: '"{{ vboxmanage_cmd }}" unregistervm "{{ vm_name }}" --delete'
+    chdir: "{{ vboxmanage_chdir }}"
+  when: vm_name in existing_vms.stdout
+  ignore_errors: yes
+
+- name: Create VM
+  ansible.builtin.shell:
+    cmd: '"{{ vboxmanage_cmd }}" createvm --name "{{ vm_name }}" --ostype Debian_64 --register --basefolder "{{ vbox_vms_dir_win }}"'
+    chdir: "{{ vboxmanage_chdir }}"
+
+- name: Configure VM resources
+  ansible.builtin.shell:
+    cmd: '"{{ vboxmanage_cmd }}" modifyvm "{{ vm_name }}" --memory {{ vm_memory }} --cpus {{ vm_cpus }} --ioapic on --vram {{ vm_vram }} --graphicscontroller vmsvga'
+    chdir: "{{ vboxmanage_chdir }}"
+
+- name: Configure network
+  ansible.builtin.shell:
+    cmd: '"{{ vboxmanage_cmd }}" modifyvm "{{ vm_name }}" --nic1 bridged --bridgeadapter1 "{{ vm_network_adapter }}"'
+    chdir: "{{ vboxmanage_chdir }}"
+  when: vm_network_type == "bridged"
+
+- name: Create storage controller
+  ansible.builtin.shell:
+    cmd: '"{{ vboxmanage_cmd }}" storagectl "{{ vm_name }}" --name "SATA Controller" --add sata --controller IntelAhci --portcount 2 --bootable on'
+    chdir: "{{ vboxmanage_chdir }}"
+
+- name: Create virtual disk
+  ansible.builtin.shell:
+    cmd: '"{{ vboxmanage_cmd }}" createhd --filename "{{ vm_disk_path_win }}" --size {{ vm_disk_size }} --format VDI'
+    chdir: "{{ vboxmanage_chdir }}"
+
+- name: Attach disk
+  ansible.builtin.shell:
+    cmd: '"{{ vboxmanage_cmd }}" storageattach "{{ vm_name }}" --storagectl "SATA Controller" --port 0 --device 0 --type hdd --medium "{{ vm_disk_path_win }}"'
+    chdir: "{{ vboxmanage_chdir }}"
+
+- name: Attach ISO
+  ansible.builtin.shell:
+    cmd: '"{{ vboxmanage_cmd }}" storageattach "{{ vm_name }}" --storagectl "SATA Controller" --port 1 --device 0 --type dvddrive --medium "{{ debian_iso_path_win }}"'
+    chdir: "{{ vboxmanage_chdir }}"
+
+- name: Configure unattended installation
+  ansible.builtin.shell:
+    cmd: >
+      "{{ vboxmanage_cmd }}" unattended install "{{ vm_name }}"
+      --iso="{{ debian_iso_path_win }}"
+      --user="{{ vm_username }}"
+      --password="{{ vm_password }}"
+      --full-user-name="{{ vm_username }}"
+      --hostname="{{ vm_hostname }}.{{ vm_domain }}"
+      --time-zone="{{ vm_timezone }}"
+      --locale="{{ vm_locale }}"
+      --country=LT
+      --package-selection-adjustment={{ package_selection }}
+      {{ '--install-additions' if install_guest_additions else '' }}
+    chdir: "{{ vboxmanage_chdir }}"
+  ignore_errors: yes
+
+- name: Configure boot order
+  ansible.builtin.shell:
+    cmd: '"{{ vboxmanage_cmd }}" modifyvm "{{ vm_name }}" --boot1 dvd --boot2 disk --boot3 none'
+    chdir: "{{ vboxmanage_chdir }}"
+
+- name: Start VM
+  ansible.builtin.shell:
+    cmd: '"{{ vboxmanage_cmd }}" startvm "{{ vm_name }}" --type {{ vm_boot_mode }}'
+    chdir: "{{ vboxmanage_chdir }}"
+
+- name: Wait for installation
+  ansible.builtin.pause:
+    seconds: 900
+    prompt: "Waiting 15 minutes for OS installation..."
+
+- name: Get VM IP from guest properties
+  ansible.builtin.shell:
+    cmd: '"{{ vboxmanage_cmd }}" guestproperty get "{{ vm_name }}" "/VirtualBox/GuestInfo/Net/0/V4/IP"'
+    chdir: "{{ vboxmanage_chdir }}"
+  register: vm_ip_result
+  until: vm_ip_result.stdout != "" and "Value:" in vm_ip_result.stdout
+  retries: 30
+  delay: 20
+  changed_when: false
+
+- name: Extract IP address
+  ansible.builtin.set_fact:
+    vm_ip_address: "{{ vm_ip_result.stdout | regex_replace('Value: ', '') | trim }}"
+
+- name: Add VM to runtime inventory
+  ansible.builtin.add_host:
+    name: "{{ vm_name }}"
+    groups: proxy_servers
+    ansible_host: "{{ vm_ip_address }}"
+    ansible_user: "{{ vm_username }}"
+    ansible_ssh_pass: "{{ vm_password }}"
+    ansible_ssh_common_args: '-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
+
+- name: Update inventory file
+  ansible.builtin.lineinfile:
+    path: "{{ playbook_dir }}/inventory/hosts.ini"
+    regexp: "^{{ vm_name }}"
+    line: "{{ vm_name }} ansible_host={{ vm_ip_address }} ansible_user={{ vm_username }}"
+    insertafter: "^\\[proxy_servers\\]"
+
+- name: Display VM info
+  ansible.builtin.debug:
+    msg:
+      - "VM created: {{ vm_name }}"
+      - "IP: {{ vm_ip_address }}"
+      - "User: {{ vm_username }}"
+      - "Password: {{ vm_password }}"

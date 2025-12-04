@@ -1,0 +1,101 @@
+---
+# Stage 1: Provision VirtualBox VM
+- name: Provision VirtualBox VM
+  hosts: localhost
+  gather_facts: yes
+  
+  vars_prompt:
+    - name: vm_name
+      prompt: "VM name"
+      default: "squid-proxy"
+      private: no
+    
+    - name: vm_memory
+      prompt: "Memory (MB)"
+      default: "2048"
+      private: no
+    
+    - name: vm_cpus
+      prompt: "CPUs"
+      default: "2"
+      private: no
+  
+  roles:
+    - role: virtualbox_debian
+      vars:
+        vm_username: test-oxylabs
+        vm_password: changeme
+        vm_hostname: "{{ vm_name }}"
+
+# Stage 2: Deploy Squid Proxy
+- name: Deploy Squid Forward Proxy
+  hosts: proxy_servers
+  gather_facts: no
+  
+  vars:
+    ansible_ssh_pass: "changeme"
+  
+  roles:
+    - squid_proxy
+
+  post_tasks:
+    - name: Display deployment summary
+      debug:
+        msg:
+          - "════════════════════════════════════════"
+          - "✅ Squid Proxy Deployment Complete!"
+          - "════════════════════════════════════════"
+          - ""
+          - "📊 VM Information:"
+          - "  Name: {{ inventory_hostname }}"
+          - "  IP: {{ ansible_host }}"
+          - "  User: {{ ansible_user }}"
+          - ""
+          - "🔐 Proxy Configuration:"
+          - "  URL: {{ ansible_host }}:{{ squid_proxy_port }}"
+          - "  Username: {{ squid_proxy_user }}"
+          - "  Password: {{ squid_proxy_pass }}"
+          - ""
+          - "🧪 Test Commands:"
+          - "  HTTP:"
+          - "    curl -x {{ ansible_host }}:{{ squid_proxy_port }} -U {{ squid_proxy_user }}:{{ squid_proxy_pass }} http://ip.oxylabs.io/headers"
+          - ""
+          - "  HTTPS (ignore cert):"
+          - "    curl -k -x {{ ansible_host }}:{{ squid_proxy_port }} -U {{ squid_proxy_user }}:{{ squid_proxy_pass }} https://ip.oxylabs.io/headers"
+          - ""
+          - "  HTTPS (with CA):"
+          - "    curl -x {{ ansible_host }}:{{ squid_proxy_port }} -U {{ squid_proxy_user }}:{{ squid_proxy_pass }} https://ip.oxylabs.io/headers"
+          - ""
+          - "🔐 CA Certificate: files/squid-ca.crt"
+          - "════════════════════════════════════════"
+
+# Stage 3: Install CA on localhost
+- name: Install CA on Ansible controller
+  hosts: localhost
+  connection: local
+  become: yes
+  gather_facts: no
+  
+  tasks:
+    - name: Check if CA certificate exists
+      stat:
+        path: "{{ playbook_dir }}/files/squid-ca.crt"
+      register: ca_file
+      become: no
+
+    - name: Install CA certificate
+      copy:
+        src: files/squid-ca.crt
+        dest: /usr/local/share/ca-certificates/squid-proxy.crt
+        mode: '0644'
+      register: ca_copied
+      when: ca_file.stat.exists
+
+    - name: Update CA certificates
+      command: update-ca-certificates
+      when: ca_copied.changed
+
+    - name: Confirm CA installation
+      debug:
+        msg: "✅ CA certificate installed on Ansible controller"
+      when: ca_copied.changed

@@ -1,0 +1,52 @@
+---
+- name: Deploy Squid Forward Proxy
+  hosts: haproxy-proxy
+  become: yes
+  gather_facts: yes
+  
+  vars:
+    ansible_ssh_pass: "changeme"
+  
+  roles:
+    - squid_proxy
+
+  post_tasks:
+    - name: Display proxy information
+      debug:
+        msg:
+          - "✅ Squid proxy deployed successfully!"
+          - ""
+          - "📊 Proxy Details:"
+          - "  Host: {{ ansible_host }}"
+          - "  Port: {{ squid_proxy_port }}"
+          - "  Username: {{ squid_proxy_user }}"
+          - ""
+          - "🧪 Test Commands:"
+          - "  HTTP:  curl -x {{ ansible_host }}:{{ squid_proxy_port }} -U {{ squid_proxy_user }}:{{ squid_proxy_pass }} http://ip.oxylabs.io/headers"
+          - "  HTTPS: curl -k -x {{ ansible_host }}:{{ squid_proxy_port }} -U {{ squid_proxy_user }}:{{ squid_proxy_pass }} https://ip.oxylabs.io/headers"
+
+- name: Install CA on Ansible controller
+  hosts: localhost
+  connection: local
+  become: yes
+  gather_facts: no
+  
+  tasks:
+    - name: Check if CA exists
+      stat:
+        path: "{{ playbook_dir }}/files/squid-ca.crt"
+      register: ca_file
+      delegate_to: localhost
+      become: no
+
+    - name: Install CA certificate
+      copy:
+        src: files/squid-ca.crt
+        dest: /usr/local/share/ca-certificates/squid-proxy.crt
+        mode: '0644'
+      register: ca_copied
+      when: ca_file.stat.exists
+
+    - name: Update CA certificates
+      command: update-ca-certificates
+      when: ca_copied.changed

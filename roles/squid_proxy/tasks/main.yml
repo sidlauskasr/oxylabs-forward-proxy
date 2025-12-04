@@ -1,0 +1,168 @@
+---
+- name: Install Python3 (using raw)
+  ansible.builtin.raw: |
+    if ! which python3 > /dev/null 2>&1; then
+      echo '{{ ansible_ssh_pass }}' | su - root -c 'apt update && apt install -y python3'
+    fi
+  args:
+    executable: /bin/bash
+  changed_when: false
+  become: no
+
+- name: Install and configure sudo (using raw and su)
+  ansible.builtin.raw: |
+    echo '{{ ansible_ssh_pass }}' | su - root -c 'apt update && apt install -y sudo && usermod -aG sudo {{ ansible_user }} && echo "{{ ansible_user }} ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/{{ ansible_user }} && chmod 0440 /etc/sudoers.d/{{ ansible_user }}'
+  args:
+    executable: /bin/bash
+  changed_when: true
+  become: no
+
+- name: Reset connection to apply sudo permissions
+  ansible.builtin.meta: reset_connection
+
+- name: Gather facts
+  ansible.builtin.setup:
+  become: yes
+
+- name: Update apt cache
+  ansible.builtin.apt:
+    update_cache: yes
+    cache_valid_time: 3600
+  become: yes
+
+- name: Install Squid with SSL support
+  apt:
+    name:
+      - squid-openssl
+      - apache2-utils
+      - openssl
+    state: present
+  become: yes
+
+- name: Create Squid SSL directory
+  file:
+    path: "{{ squid_ssl_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  become: yes
+
+- name: Generate CA private key
+  shell: openssl genrsa -out {{ squid_ssl_dir }}/ca.key 4096
+  args:
+    creates: "{{ squid_ssl_dir }}/ca.key"
+  become: yes
+
+- name: Generate CA certificate
+  shell: openssl req -new -x509 -days {{ squid_cert_validity_days }} -key {{ squid_ssl_dir }}/ca.key -out {{ squid_ssl_dir }}/ca.crt -subj "/CN={{ squid_ca_common_name }}"
+  args:
+    creates: "{{ squid_ssl_dir }}/ca.crt"
+  become: yes
+
+- name: Generate proxy private key
+  shell: openssl genrsa -out {{ squid_ssl_dir }}/cert.key 4096
+  args:
+    creates: "{{ squid_ssl_dir }}/cert.key"
+  become: yes
+
+- name: Generate proxy CSR
+  shell: openssl req -new -key {{ squid_ssl_dir }}/cert.key -out {{ squid_ssl_dir }}/cert.csr -subj "/CN=squid.proxy.local"
+  args:
+    creates: "{{ squid_ssl_dir }}/cert.csr"
+  become: yes
+
+- name: Sign proxy certificate
+  shell: openssl x509 -req -days {{ squid_cert_validity_days }} -in {{ squid_ssl_dir }}/cert.csr -CA {{ squid_ssl_dir }}/ca.crt -CAkey {{ squid_ssl_dir }}/ca.key -CAcreateserial -out {{ squid_ssl_dir }}/cert.crt
+  args:
+    creates: "{{ squid_ssl_dir }}/cert.crt"
+  become: yes
+
+- name: Combine certificate and key
+  shell: cat {{ squid_ssl_dir }}/cert.crt {{ squid_ssl_dir }}/cert.key > {{ squid_ssl_dir }}/bump.pem
+  args:
+    creates: "{{ squid_ssl_dir }}/bump.pem"
+  become: yes
+
+- name: Set permissions on bump.pem
+  file:
+    path: "{{ squid_ssl_dir }}/bump.pem"
+    owner: proxy
+    group: proxy
+    mode: '0600'
+  become: yes
+
+- name: Check if SSL db initialized
+  stat:
+    path: "{{ squid_ssl_db_dir }}/index.txt"
+  register: ssl_db_initialized
+  become: yes
+
+- name: Remove old SSL database
+  file:
+    path: "{{ squid_ssl_db_dir }}"
+    state: absent
+  when: not ssl_db_initialized.stat.exists
+  become: yes
+
+- name: Create SSL database parent directory
+  file:
+    path: /var/lib/squid
+    state: directory
+    owner: proxy
+    group: proxy
+    mode: '0755'
+  become: yes
+
+- name: Initialize SSL certificate database
+  shell: |
+    cd /var/lib/squid
+    runuser -u proxy -- /usr/lib/squid/security_file_certgen -c -s {{ squid_ssl_db_dir }} -M {{ squid_ssl_bump_cache_size }}
+  args:
+    creates: "{{ squid_ssl_db_dir }}/index.txt"
+  become: yes
+
+- name: Create Squid htpasswd file
+  command: htpasswd -bc /etc/squid/.htpasswd {{ squid_proxy_user }} {{ squid_proxy_pass }}
+  args:
+    creates: /etc/squid/.htpasswd
+  no_log: yes
+  become: yes
+
+- name: Deploy Squid configuration
+  template:
+    src: squid.conf.j2
+    dest: /etc/squid/squid.conf
+    owner: root
+    group: root
+    mode: '0644'
+    validate: squid -k parse -f %s
+  notify: restart squid
+  become: yes
+
+- name: Enable and start Squid
+  systemd:
+    name: squid
+    enabled: yes
+    state: started
+  become: yes
+
+- name: Restart Squid
+  systemd:
+    name: squid
+    enabled: yes
+    state: restarted
+  become: yes
+
+- name: Wait for Squid
+  wait_for:
+    port: "{{ squid_proxy_port }}"
+    timeout: 60
+
+- name: Fetch CA certificate
+  fetch:
+    src: "{{ squid_ssl_dir }}/ca.crt"
+    dest: "{{ playbook_dir }}/files/squid-ca.crt"
+    flat: yes
+  when: squid_fetch_ca_cert | bool
+  become: yes
